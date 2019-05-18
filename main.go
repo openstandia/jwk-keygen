@@ -17,12 +17,15 @@
 package main
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base32"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"golang.org/x/crypto/ed25519"
@@ -31,6 +34,7 @@ import (
 
 	"gopkg.in/alecthomas/kingpin.v2"
 	"gopkg.in/square/go-jose.v2"
+	"gopkg.in/square/go-jose.v2/json"
 )
 
 var (
@@ -48,6 +52,8 @@ var (
 	bits    = app.Flag("bits", "Key size in bits").Int()
 	kid     = app.Flag("kid", "Key ID").String()
 	kidRand = app.Flag("kid-rand", "Generate random Key ID").Bool()
+	jwks    = app.Flag("jwks", "Generate as JWKS too").Bool()
+	format  = app.Flag("format", "Format JSON").Bool()
 )
 
 // KeygenSig generates keypair for corresponding SignatureAlgorithm.
@@ -126,6 +132,30 @@ func KeygenEnc(alg jose.KeyAlgorithm, bits int) (crypto.PublicKey, crypto.Privat
 	}
 }
 
+func pemBlockForKey(priv interface{}) (*pem.Block, error) {
+	switch k := priv.(type) {
+	case *rsa.PrivateKey:
+		return &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}, nil
+	case *ecdsa.PrivateKey:
+		b, err := x509.MarshalECPrivateKey(k)
+		if err != nil {
+			return nil, err
+		}
+		return &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}, nil
+	default:
+		return nil, errors.New("Uknown key type")
+	}
+}
+
+func formatJSON(b []byte) []byte {
+	var buf bytes.Buffer
+	err := json.Indent(&buf, b, "", "    ")
+	if err != nil {
+		return b
+	}
+	return buf.Bytes()
+}
+
 func main() {
 	app.Version("v2")
 	kingpin.MustParse(app.Parse(os.Args[1:]))
@@ -164,21 +194,68 @@ func main() {
 	pubJS, err := pub.MarshalJSON()
 	app.FatalIfError(err, "can't Marshal public key to JSON")
 
+	if *format {
+		pubJS = formatJSON(pubJS)
+		privJS = formatJSON(privJS)
+	}
+
+	var pubJSJWKS []byte
+	var privJSJWKS []byte
+
+	if *jwks {
+		privJWKS := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{priv}}
+		pubJWKS := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{pub}}
+
+		privJSJWKS, err = json.Marshal(privJWKS)
+		app.FatalIfError(err, "can't Marshal private key with JWKS to JSON")
+		pubJSJWKS, err = json.Marshal(pubJWKS)
+		app.FatalIfError(err, "can't Marshal public key with JWKS to JSON")
+
+		if *format {
+			pubJSJWKS = formatJSON(pubJSJWKS)
+			privJSJWKS = formatJSON(privJSJWKS)
+		}
+	}
+
 	if *kid == "" {
-		fmt.Printf("==> jwk_%s.pub <==\n", *alg)
+		fmt.Printf("==> jwk_%s-pub.json <==\n", *alg)
 		fmt.Println(string(pubJS))
-		fmt.Printf("==> jwk_%s <==\n", *alg)
+		fmt.Printf("==> jwk_%s.json <==\n", *alg)
 		fmt.Println(string(privJS))
+
+		if *jwks {
+			fmt.Printf("==> jwks_%s-pub.json <==\n", *alg)
+			fmt.Println(string(pubJSJWKS))
+			fmt.Printf("==> jwks_%s.json <==\n", *alg)
+			fmt.Println(string(privJSJWKS))
+		}
 	} else {
 		// JWK Thumbprint (RFC7638) is not used for key id because of
 		// lack of canonical representation.
 		fname := fmt.Sprintf("jwk_%s_%s_%s", *use, *alg, *kid)
-		err = writeNewFile(fname+".pub", pubJS, 0444)
-		app.FatalIfError(err, "can't write public key to file %s.pub", fname)
-		fmt.Printf("Written public key to %s.pub\n", fname)
-		err = writeNewFile(fname, privJS, 0400)
-		app.FatalIfError(err, "cant' write private key to file %s", fname)
-		fmt.Printf("Written private key to %s\n", fname)
+		err = writeNewFile(fname+"-pub.json", pubJS, 0444)
+		app.FatalIfError(err, "can't write public key with JWK to file %s-pub.json", fname)
+		fmt.Printf("Written public key with JWK to %s-pub.json\n", fname)
+		err = writeNewFile(fname+".json", privJS, 0400)
+		app.FatalIfError(err, "cant' write private key with JWK to file %s.json", fname)
+		fmt.Printf("Written private key with JWK to %s.json\n", fname)
+
+		if *jwks {
+			fname := fmt.Sprintf("jwks_%s_%s_%s", *use, *alg, *kid)
+			err = writeNewFile(fname+"-pub.json", pubJSJWKS, 0444)
+			app.FatalIfError(err, "can't write public key with JWKS to file %s-pub.json", fname)
+			fmt.Printf("Written public key with JWKS to %s-pub.json\n", fname)
+			err = writeNewFile(fname+".json", privJSJWKS, 0400)
+			app.FatalIfError(err, "cant' write private key with JWKS to file %s.json", fname)
+			fmt.Printf("Written private key with JWKS to %s.json\n", fname)
+		}
+		// fname = fmt.Sprintf("%s_%s_%s", *use, *alg, *kid)
+		// err = writeNewFile(fname+"-pub.pem", pubPEM, 0444)
+		// app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
+		// fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
+		// err = writeNewFile(fname+".pem", privPEM, 0400)
+		// app.FatalIfError(err, "cant' write private key with PEM to file %s.pem", fname)
+		// fmt.Printf("Written private key to %s.pem\n", fname)
 	}
 }
 
