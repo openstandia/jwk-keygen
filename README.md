@@ -26,7 +26,9 @@ no Key ID is specified: neither pre-defined nor random one.
 
 * `--format`: Out JSON with format
 * `--jwks`: Generate as JWKS too
-* `--pem`: Generate as PEM too (with PKCS#1)
+* `--pem`: Generate as PEM too
+* `--pem-body`: Generate as PEM too (only body without LF)
+* `--pem-one-line`: Generate as PEM too (with one-line style)
 
 ## Examples
 

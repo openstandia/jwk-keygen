@@ -31,6 +31,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 	"io"
 	"os"
+	"regexp"
 
 	"gopkg.in/alecthomas/kingpin.v2"
 	"gopkg.in/square/go-jose.v2"
@@ -49,12 +50,14 @@ var (
 		string(jose.RSA1_5), string(jose.RSA_OAEP), string(jose.RSA_OAEP_256),
 		string(jose.ECDH_ES), string(jose.ECDH_ES_A128KW), string(jose.ECDH_ES_A192KW), string(jose.ECDH_ES_A256KW),
 	)
-	bits    = app.Flag("bits", "Key size in bits").Int()
-	kid     = app.Flag("kid", "Key ID").String()
-	kidRand = app.Flag("kid-rand", "Generate random Key ID").Bool()
-	jwks    = app.Flag("jwks", "Generate as JWKS too").Bool()
-	pemOut  = app.Flag("pem", "Generate as PEM too").Bool()
-	format  = app.Flag("format", "Format JSON").Bool()
+	bits       = app.Flag("bits", "Key size in bits").Int()
+	kid        = app.Flag("kid", "Key ID").String()
+	kidRand    = app.Flag("kid-rand", "Generate random Key ID").Bool()
+	jwks       = app.Flag("jwks", "Generate as JWKS too").Bool()
+	pemOut     = app.Flag("pem", "Generate as PEM too").Bool()
+	pemBody    = app.Flag("pem-body", "Generate as PEM body too").Bool()
+	pemOneLine = app.Flag("pem-one-line", "Generate as PEM with one-line too").Bool()
+	format     = app.Flag("format", "Out JSON with format").Bool()
 )
 
 // KeygenSig generates keypair for corresponding SignatureAlgorithm.
@@ -162,6 +165,20 @@ func pemBlockForKey(priv crypto.PrivateKey) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func toBody(b []byte) []byte {
+	s := string(b)
+	rep := regexp.MustCompile("(?m)^\\-{5}.*\\-{5}$")
+	rep2 := regexp.MustCompile("\\n")
+	s = rep.ReplaceAllString(s, "")
+	return []byte(rep2.ReplaceAllString(s, ""))
+}
+
+func toOneLine(b []byte) []byte {
+	s := string(b)
+	rep := regexp.MustCompile("\\n")
+	return []byte(rep.ReplaceAllString(s, "\\n"))
+}
+
 func pemBlockForPublicKey(pubKey crypto.PublicKey) ([]byte, error) {
 	var pemBlock *pem.Block
 	switch k := pubKey.(type) {
@@ -267,9 +284,9 @@ func main() {
 	var privPEM []byte
 	var pubPEM []byte
 
-	if *pemOut {
+	if *pemOut || *pemBody || *pemOneLine {
 		privPEM, err = pemBlockForKey(privKey)
-		app.FatalIfError(err, "can't Marshal private key with to PEM(PKCS#1)")
+		app.FatalIfError(err, "can't Marshal private key with to PEM")
 		pubPEM, err = pemBlockForPublicKey(pubKey)
 		app.FatalIfError(err, "can't Marshal public key to PEM")
 	}
@@ -292,6 +309,20 @@ func main() {
 			fmt.Println(string(pubPEM))
 			fmt.Printf("==> pem_%s.pem <==\n", *alg)
 			fmt.Println(string(privPEM))
+		}
+
+		if *pemBody {
+			fmt.Printf("==> pem-body-%s-pub.pem <==\n", *alg)
+			fmt.Println(string(toBody(pubPEM)))
+			fmt.Printf("==> pem-body-%s.pem <==\n", *alg)
+			fmt.Println(string(toBody(privPEM)))
+		}
+
+		if *pemOneLine {
+			fmt.Printf("==> pem-one-line-%s-pub.pem <==\n", *alg)
+			fmt.Println(string(toOneLine(pubPEM)))
+			fmt.Printf("==> pem-one-line-%s.pem <==\n", *alg)
+			fmt.Println(string(toOneLine(privPEM)))
 		}
 	} else {
 		// JWK Thumbprint (RFC7638) is not used for key id because of
@@ -316,12 +347,31 @@ func main() {
 
 		if *pemOut {
 			fname = fmt.Sprintf("pem_%s_%s_%s", *use, *alg, *kid)
-			pfname := fmt.Sprintf("pem_pkcs#1_%s_%s_%s", *use, *alg, *kid)
 			err = writeNewFile(fname+"-pub.pem", pubPEM, 0444)
 			app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
 			fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
-			err = writeNewFile(pfname+".pem", privPEM, 0400)
-			app.FatalIfError(err, "cant' write private key with PEM(PKCS#1) to file %s.pem", fname)
+			err = writeNewFile(fname+".pem", privPEM, 0400)
+			app.FatalIfError(err, "cant' write private key with PEM to file %s.pem", fname)
+			fmt.Printf("Written private key to %s.pem\n", fname)
+		}
+
+		if *pemBody {
+			fname = fmt.Sprintf("pem-body_%s_%s_%s", *use, *alg, *kid)
+			err = writeNewFile(fname+"-pub.pem", toBody(pubPEM), 0444)
+			app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
+			fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
+			err = writeNewFile(fname+".pem", toBody(privPEM), 0400)
+			app.FatalIfError(err, "cant' write private key with PEM to file %s.pem", fname)
+			fmt.Printf("Written private key to %s.pem\n", fname)
+		}
+
+		if *pemOneLine {
+			fname = fmt.Sprintf("pem-one-line_%s_%s_%s", *use, *alg, *kid)
+			err = writeNewFile(fname+"-pub.pem", toOneLine(pubPEM), 0444)
+			app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
+			fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
+			err = writeNewFile(fname+".pem", toOneLine(privPEM), 0400)
+			app.FatalIfError(err, "cant' write private key with PEM to file %s.pem", fname)
 			fmt.Printf("Written private key to %s.pem\n", fname)
 		}
 	}
