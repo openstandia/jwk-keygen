@@ -53,6 +53,7 @@ var (
 	kid     = app.Flag("kid", "Key ID").String()
 	kidRand = app.Flag("kid-rand", "Generate random Key ID").Bool()
 	jwks    = app.Flag("jwks", "Generate as JWKS too").Bool()
+	pemOut  = app.Flag("pem", "Generate as PEM too").Bool()
 	format  = app.Flag("format", "Format JSON").Bool()
 )
 
@@ -132,19 +133,65 @@ func KeygenEnc(alg jose.KeyAlgorithm, bits int) (crypto.PublicKey, crypto.Privat
 	}
 }
 
-func pemBlockForKey(priv interface{}) (*pem.Block, error) {
+func pemBlockForKey(priv crypto.PrivateKey) ([]byte, error) {
+	var pemBlock *pem.Block
 	switch k := priv.(type) {
 	case *rsa.PrivateKey:
-		return &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(k)}, nil
+		pemBlock = &pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(k),
+		}
 	case *ecdsa.PrivateKey:
 		b, err := x509.MarshalECPrivateKey(k)
 		if err != nil {
 			return nil, err
 		}
-		return &pem.Block{Type: "EC PRIVATE KEY", Bytes: b}, nil
+		pemBlock = &pem.Block{
+			Type:  "EC PRIVATE KEY",
+			Bytes: b,
+		}
 	default:
-		return nil, errors.New("Uknown key type")
+		fmt.Println(k)
+		return nil, errors.New("Uknown private key type")
 	}
+	var buf bytes.Buffer
+	err := pem.Encode(&buf, pemBlock)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func pemBlockForPublicKey(pubKey crypto.PublicKey) ([]byte, error) {
+	var pemBlock *pem.Block
+	switch k := pubKey.(type) {
+	case *rsa.PublicKey:
+		asn1Bytes, err := x509.MarshalPKIXPublicKey(k)
+		if err != nil {
+			return nil, err
+		}
+		pemBlock = &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: asn1Bytes,
+		}
+	case *ecdsa.PublicKey:
+		asn1Bytes, err := x509.MarshalPKIXPublicKey(k)
+		if err != nil {
+			return nil, err
+		}
+		pemBlock = &pem.Block{
+			Type:  "PUBLIC KEY",
+			Bytes: asn1Bytes,
+		}
+	default:
+		return nil, errors.New("Uknown public key type")
+	}
+	var buf bytes.Buffer
+	err := pem.Encode(&buf, pemBlock)
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func formatJSON(b []byte) []byte {
@@ -217,6 +264,16 @@ func main() {
 		}
 	}
 
+	var privPEM []byte
+	var pubPEM []byte
+
+	if *pemOut {
+		privPEM, err = pemBlockForKey(privKey)
+		app.FatalIfError(err, "can't Marshal private key with to PEM(PKCS#1)")
+		pubPEM, err = pemBlockForPublicKey(pubKey)
+		app.FatalIfError(err, "can't Marshal public key to PEM")
+	}
+
 	if *kid == "" {
 		fmt.Printf("==> jwk_%s-pub.json <==\n", *alg)
 		fmt.Println(string(pubJS))
@@ -228,6 +285,13 @@ func main() {
 			fmt.Println(string(pubJSJWKS))
 			fmt.Printf("==> jwks_%s.json <==\n", *alg)
 			fmt.Println(string(privJSJWKS))
+		}
+
+		if *pemOut {
+			fmt.Printf("==> pem_%s-pub.pem <==\n", *alg)
+			fmt.Println(string(pubPEM))
+			fmt.Printf("==> pem_%s.pem <==\n", *alg)
+			fmt.Println(string(privPEM))
 		}
 	} else {
 		// JWK Thumbprint (RFC7638) is not used for key id because of
@@ -249,13 +313,17 @@ func main() {
 			app.FatalIfError(err, "cant' write private key with JWKS to file %s.json", fname)
 			fmt.Printf("Written private key with JWKS to %s.json\n", fname)
 		}
-		// fname = fmt.Sprintf("%s_%s_%s", *use, *alg, *kid)
-		// err = writeNewFile(fname+"-pub.pem", pubPEM, 0444)
-		// app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
-		// fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
-		// err = writeNewFile(fname+".pem", privPEM, 0400)
-		// app.FatalIfError(err, "cant' write private key with PEM to file %s.pem", fname)
-		// fmt.Printf("Written private key to %s.pem\n", fname)
+
+		if *pemOut {
+			fname = fmt.Sprintf("pem_%s_%s_%s", *use, *alg, *kid)
+			pfname := fmt.Sprintf("pem_pkcs#1_%s_%s_%s", *use, *alg, *kid)
+			err = writeNewFile(fname+"-pub.pem", pubPEM, 0444)
+			app.FatalIfError(err, "can't write public key with PEM to file %s-pub.pem", fname)
+			fmt.Printf("Written public key with PEM to %s-pub.pem\n", fname)
+			err = writeNewFile(pfname+".pem", privPEM, 0400)
+			app.FatalIfError(err, "cant' write private key with PEM(PKCS#1) to file %s.pem", fname)
+			fmt.Printf("Written private key to %s.pem\n", fname)
+		}
 	}
 }
 
